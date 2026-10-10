@@ -1,0 +1,20 @@
+{
+  "api": 1,
+  "updatedAt": "2026-10-10T00:00:00Z",
+  "sources": [
+    {
+      "name": "public-test-stream",
+      "version": "1.0.0",
+      "summary": "公开 HLS 测试流（装上即可播放，用来验证目录链路）",
+      "requires": 1,
+      "tags": ["hls", "demo"]
+    },
+    {
+      "name": "my-static-hls",
+      "version": "1.0.0",
+      "summary": "示例：自建静态 HLS 片库（需要把域名改成你自己的）",
+      "requires": 1,
+      "tags": ["hls", "self-hosted"]
+    }
+  ]
+}

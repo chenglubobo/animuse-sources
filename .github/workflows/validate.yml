@@ -1,0 +1,17 @@
+name: validate-source-catalog
+
+# 这个仓库只需要一件事：坏源不要进主干。
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 校验目录契约
+        run: node scripts/check.mjs

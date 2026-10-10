@@ -1,0 +1,8 @@
+# 统一换行符：JSON、脚本、文档一律 LF。
+# 不加这一段的话，Windows 上每次提交都会出现“LF will be replaced by CRLF”告警，
+# 多人协作时还会产生整文件 diff。
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary

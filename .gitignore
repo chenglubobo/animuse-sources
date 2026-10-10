@@ -1,0 +1,9 @@
+# 这个仓库只需要提交「源定义」，其他都别进版本库
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
+.shots/
+
+# 本地导出/临时文件
+*.tmp.json
