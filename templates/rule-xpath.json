@@ -1,0 +1,15 @@
+{
+  "api": 1,
+  "type": "anime",
+  "name": "REPLACE_ME",
+  "version": "1.0.0",
+  "baseURL": "https://example.com/",
+  "searchMode": "xpath",
+  "chapterMode": "xpath",
+  "searchURL": "https://example.com/search?wd=@keyword",
+  "searchList": "//div[@class='search-item']",
+  "searchName": "//a[2]",
+  "searchResult": "//a[2]",
+  "chapterRoads": "//div[@class='play-source']",
+  "chapterResult": "//li/a"
+}

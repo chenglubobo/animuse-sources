@@ -20,11 +20,12 @@
  * 退出码：有 error → 1，仅 warning → 0。
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { CLIENT_SOURCE_API_LEVEL, validateRuleSource } from './lib.mjs'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-/** 客户端当前支持的源能力代际；源的 requires 高于它就会被拒绝安装 */
-export const CLIENT_SOURCE_API_LEVEL = 1
+/** 客户端当前支持的源能力代际（定义在 lib.mjs，这里重新导出，保持原有导入路径可用） */
+export { CLIENT_SOURCE_API_LEVEL }
 /** 本校验器认识的目录格式代际 */
 export const CATALOG_API = 1
 /** 客户端只接受这种源名（要能安全拼进 URL 路径） */
@@ -75,6 +76,24 @@ function checkSourceFile(dir, entry, errors, warnings, summary) {
       message: `version 必须与 index.json 一致（目录里是 ${entry.version}，文件里是 ${raw.version}）；改完源跑 node scripts/bump.mjs ${entry.name} --patch`,
     })
   }
+
+  // ---- 规则式源（mode: "rule"）：没有地址模板，校验的是说明书 ----
+  // 判定逻辑与 new.mjs / 客户端 src/rules/validate.ts 共用一份，避免两处标准漂移。
+  const isRule = raw.mode === 'rule' || (raw.rule !== undefined && raw.rule !== null)
+  if (isRule) {
+    if (!raw.rule || typeof raw.rule !== 'object' || Array.isArray(raw.rule)) {
+      errors.push({ file, message: 'mode="rule" 时必须有 rule 对象（规则说明书）' })
+    } else {
+      const result = validateRuleSource(raw.rule, { name: entry.name })
+      for (const message of result.errors) errors.push({ file, message })
+      for (const message of result.warnings) warnings.push({ file, message })
+    }
+
+    // 规则源没有模板，后面的模板校验整段跳过
+    summary.push({ name: entry.name, version: entry.version, kind: 'rule', file, hasVariables: false })
+    return
+  }
+
 
   const template = typeof raw.urlTemplate === 'string' ? raw.urlTemplate.trim() : ''
   if (!template) {

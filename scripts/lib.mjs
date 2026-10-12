@@ -16,6 +16,8 @@ export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** 源名：必须能安全拼进 URL 路径，与客户端 / check.mjs 保持一致 */
 export const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+/** 客户端当前支持的源/规则能力代际，高于它会被拒绝加载 */
+export const CLIENT_SOURCE_API_LEVEL = 1
 /** 版本号：数字段，客户端按段比较（1.10.0 > 1.9.0） */
 export const VERSION_PATTERN = /^v?\d+(\.\d+)*$/
 
@@ -116,6 +118,142 @@ export function runGit(args, root = ROOT) {
 export function runGitQuiet(args, root = ROOT) {
   const result = spawnSync('git', args, { cwd: root, stdio: 'ignore' })
   return result.status
+}
+
+/* ----------------------------- 规则校验 ----------------------------- */
+
+/**
+ * 校验一份规则式源的「说明书」（mode: "rule" 的 rule 字段）。
+ *
+ * 与客户端 src/rules/validate.ts 的 parseRule **同一套判定**：
+ * 这里能过的，客户端就能加载；这里拦下的，客户端也会丢弃（或在安装时报错）。
+ * new.mjs（发布）与 check.mjs（校验目录）都用它，避免两处标准漂移。
+ *
+ * @returns {{ errors: string[], warnings: string[] }}
+ */
+export function validateRuleSource(rule, options = {}) {
+  const errors = []
+  const warnings = []
+  const fileName = options.name
+
+  if (!rule || typeof rule !== 'object' || Array.isArray(rule)) {
+    return { errors: ['rule 必须是一个 JSON 对象'], warnings }
+  }
+
+  // 本客户端不执行规则里的任何脚本（与 Kazumi 的取舍不同），这是硬线
+  // 真正危险的脚本字段：出现即拒绝
+  for (const field of ['captchaScript', 'captchaScripts', 'script', 'scripts', 'eval', 'preload']) {
+    if (rule[field] !== undefined) {
+      errors.push(`规则包含脚本类字段 "${field}"：客户端不执行规则里的任何脚本`)
+    }
+  }
+  // 反爬配置块：Kazumi 的规则文件总是带它（哪怕没启用），客户端忽略即可 → 只告警
+  if (rule.antiCrawlerConfig !== undefined) {
+    warnings.push('规则带 antiCrawlerConfig：客户端会忽略它（不支持验证码交互），遇到验证页时这条源会失败')
+  }
+
+  if (typeof rule.name !== 'string' || !NAME_PATTERN.test(rule.name)) {
+    errors.push('rule.name 不合法（只允许字母或数字开头、最多 64 位的 A-Za-z0-9._-）')
+  } else if (fileName && rule.name !== fileName) {
+    warnings.push(`rule.name（${rule.name}）与文件名不一致；客户端以文件名为准`)
+  }
+
+  if (typeof rule.version !== 'string' || !rule.version.trim()) {
+    errors.push('rule.version 缺失')
+  }
+
+  if (rule.api !== undefined && (!Number.isInteger(rule.api) || rule.api > CLIENT_SOURCE_API_LEVEL)) {
+    errors.push(`rule.api 高于客户端代际 ${CLIENT_SOURCE_API_LEVEL}，客户端会拒绝加载`)
+  }
+
+  const modes = ['xpath', 'api']
+  if (!modes.includes(rule.searchMode)) errors.push('rule.searchMode 必须是 "xpath" 或 "api"')
+  if (!modes.includes(rule.chapterMode)) errors.push('rule.chapterMode 必须是 "xpath" 或 "api"')
+
+  if (typeof rule.baseURL !== 'string' || !rule.baseURL.trim()) {
+    errors.push('rule.baseURL 必填（用于补全相对链接）')
+  }
+
+  // XPath 选择器一律要求绝对路径（与客户端 selectors.ts 同义）
+  // 接受 // 、.// 、/self:: —— 这三类在真实规则里都出现过（裸相对路径不接受）
+  for (const field of ['searchList', 'searchName', 'searchResult', 'chapterRoads', 'chapterResult']) {
+    const value = rule[field]
+    if (typeof value === 'string' && value.trim() && !/^\s*(\/\/|\.\/|\.\/\/|\/self::)/.test(value)) {
+      errors.push(`rule.${field} 必须以 // 、.// 或 /self:: 开头（不接受裸相对路径）`)
+    }
+  }
+
+  if (rule.searchMode === 'xpath') {
+    for (const field of ['searchURL', 'searchList', 'searchName', 'searchResult']) {
+      if (typeof rule[field] !== 'string' || !rule[field].trim()) {
+        errors.push(`XPath 搜索模式需要 rule.${field}`)
+      }
+    }
+  } else if (rule.searchMode === 'api') {
+    const search = rule.searchApiConfig
+    if (!search || typeof search !== 'object') {
+      errors.push('API 搜索模式需要 rule.searchApiConfig')
+    } else {
+      if (!search.request || typeof search.request.url !== 'string' || !search.request.url.trim()) {
+        errors.push('searchApiConfig.request.url 必填')
+      }
+      for (const field of ['listPath', 'namePath', 'sourcePath']) {
+        if (typeof search[field] !== 'string' || !search[field].trim()) {
+          errors.push(`searchApiConfig.${field} 必填`)
+        }
+      }
+    }
+  }
+
+  if (rule.chapterMode === 'xpath') {
+    for (const field of ['chapterRoads', 'chapterResult']) {
+      if (typeof rule[field] !== 'string' || !rule[field].trim()) {
+        errors.push(`XPath 选集模式需要 rule.${field}`)
+      }
+    }
+  } else if (rule.chapterMode === 'api') {
+    const chapter = rule.chapterApiConfig
+    if (!chapter || typeof chapter !== 'object') {
+      errors.push('API 选集模式需要 rule.chapterApiConfig')
+    } else {
+      if (!chapter.request || typeof chapter.request.url !== 'string' || !chapter.request.url.trim()) {
+        errors.push('chapterApiConfig.request.url 必填')
+      }
+      // roadNamePath / episodeNamePath 可缺省或为空（界面用「线路 N / 第 N 集」兜底）
+      for (const field of ['roadsPath', 'episodesPath', 'episodeUrlPath']) {
+        if (typeof chapter[field] !== 'string' || !chapter[field].trim()) {
+          errors.push(`chapterApiConfig.${field} 必填`)
+        }
+      }
+      for (const field of ['roadNamePath', 'episodeNamePath']) {
+        if (typeof chapter[field] !== 'string' || !chapter[field].trim()) {
+          warnings.push(`chapterApiConfig.${field} 缺省或为空：界面里会用兜底名字`)
+        }
+      }
+      if (!chapter.episodePage || typeof chapter.episodePage.url !== 'string' || !chapter.episodePage.url.trim()) {
+        errors.push('chapterApiConfig.episodePage.url 必填（播放页模板）')
+      }
+    }
+  }
+
+  // JSONPath 子集：递归 / 过滤 / 切片都不支持（客户端遇到会直接抛错）
+  for (const [path, field] of [
+    [rule.searchApiConfig?.listPath, 'searchApiConfig.listPath'],
+    [rule.searchApiConfig?.namePath, 'searchApiConfig.namePath'],
+    [rule.searchApiConfig?.sourcePath, 'searchApiConfig.sourcePath'],
+    [rule.chapterApiConfig?.roadsPath, 'chapterApiConfig.roadsPath'],
+    [rule.chapterApiConfig?.roadNamePath, 'chapterApiConfig.roadNamePath'],
+    [rule.chapterApiConfig?.episodesPath, 'chapterApiConfig.episodesPath'],
+    [rule.chapterApiConfig?.episodeNamePath, 'chapterApiConfig.episodeNamePath'],
+    [rule.chapterApiConfig?.episodeUrlPath, 'chapterApiConfig.episodeUrlPath'],
+  ]) {
+    if (typeof path !== 'string' || !path.trim()) continue
+    if (path.includes('..')) errors.push(`${field}: 不支持递归下降 $..`)
+    if (path.includes('?') || path.includes(':')) errors.push(`${field}: 不支持过滤或切片表达式`)
+    if (!path.trim().startsWith('$')) errors.push(`${field}: JSONPath 必须以 $ 开头`)
+  }
+
+  return { errors, warnings }
 }
 
 /* -------------------------------- 输出 -------------------------------- */

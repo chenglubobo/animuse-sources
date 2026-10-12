@@ -13,6 +13,9 @@
  *   · 不执行任何破坏性 git 操作（没有 force / hard reset / 覆盖远端历史）；
  *   · 推送只推当前分支到 origin，不猜远端、不改远端配置。
  */
+import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   ROOT,
   abort,
@@ -52,14 +55,67 @@ if (result.errors.length) {
 }
 ok('校验通过')
 
-/* --------------------------- 2. 生成提交信息 --------------------------- */
+/* ---------------- 2. 改了内容却没升版本的兜底 ------------------------- */
+
+/**
+ * `check.mjs` 只能发现「`{name}.json` 与 `index.json` 的版本号不一致」，
+ * 发现不了「改了源内容、两处版本都没动」—— 那种情况客户端永远收不到更新，而且悄无声息。
+ * 这里拿工作区与 HEAD 比一次，把这种改动拦在提交之前。
+ *
+ * 只看 `{name}.json`：`index.json` 里的 summary / tags 每次读目录都会重新拉，
+ * 不升版本也能生效，不构成「用户收不到更新」。
+ */
+function findUnbumpedSources(files) {
+  if (!isGitRepo(ROOT)) return []
+  const unbumped = []
+
+  for (const file of files) {
+    let committed
+    try {
+      committed = execFileSync('git', ['show', `HEAD:${file}`], {
+        cwd: ROOT,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+    } catch {
+      continue // HEAD 里还没有这个文件（新源），交给 check.mjs 管
+    }
+
+    const current = readFileSync(join(ROOT, file), 'utf8')
+    if (current === committed) continue
+
+    try {
+      const before = JSON.parse(committed)
+      const after = JSON.parse(current)
+      if (before.version === after.version) unbumped.push({ file, version: after.version })
+    } catch {
+      // 解析不了的坏文件由 check.mjs 报错，这里不重复报
+    }
+  }
+
+  return unbumped
+}
+
+const unbumped = findUnbumpedSources(result.sources.map((source) => source.file))
+if (unbumped.length) {
+  abort(
+    `${unbumped.length} 个源改了内容却没升版本：${unbumped
+      .map((item) => `${item.file}（仍是 ${item.version}）`)
+      .join('、')}`,
+    '客户端只按版本号判断有没有更新 —— 不升版本，用户永远收不到这次改动。\n' +
+      '  跑 node scripts/bump.mjs <name> --patch（会同步两个文件），然后重试',
+  )
+  process.exit()
+}
+
+/* --------------------------- 3. 生成提交信息 --------------------------- */
 
 const counts = new Map()
 for (const source of result.sources) counts.set(source.kind, (counts.get(source.kind) ?? 0) + 1)
 const summary = [...counts.entries()].map(([kind, count]) => `${kind} ${count}`).join(' / ')
 const commitMessage = message ?? `chore: 更新源目录（${result.sources.length} 条源：${summary}）`
 
-/* ------------------------------ 3. git 流程 ---------------------------- */
+/* ------------------------------ 4. git 流程 ---------------------------- */
 
 if (!isGitRepo(ROOT)) {
   if (!wantInit) {
@@ -111,7 +167,7 @@ if (staged === 0) {
   ok('已提交')
 }
 
-/* -------------------------------- 4. 推送 ------------------------------ */
+/* -------------------------------- 5. 推送 ------------------------------ */
 
 if (!wantPush) {
   console.log('\n下一步：')

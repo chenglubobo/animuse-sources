@@ -21,6 +21,9 @@
 ├── .gitattributes            # 统一 LF 换行（避免 Windows 上反复出现 CRLF 告警）
 ├── .github/
 │   └── workflows/validate.yml # push / PR 时自动跑校验
+├── templates/
+│   ├── rule-xpath.json     # 规则源骨架：XPath 模式（选择器抓页面）
+│   └── rule-api.json       # 规则源骨架：接口模式（JSONPath 抓接口）
 └── scripts/
     ├── check.mjs              # 零依赖校验器（本地与 CI 共用）
     ├── new.mjs                # 新增一条源（同时写两个文件）
@@ -73,12 +76,63 @@ node scripts/publish.mjs --push
 
 ---
 
+## 2.5 发布一条规则式源（地址没有规律的站点用这种）
+
+如果目标站点的地址带签名、内部 id 或每集都不一样，模板套不上 —— 改用**规则式源**：
+源里写的是「怎么搜索、怎么选集」，真实播放地址由 **Animuse 桌面版**开隐藏窗口嗅探出来。
+
+```bash
+# 1. 从骨架开始（XPath 模式；接口模式用 templates/rule-api.json）
+#    草稿放在 rules/ 子目录：校验器只扫仓库根，草稿不会被误当成"没登记的源"
+mkdir -p rules
+cp templates/rule-xpath.json rules/my-rule.json
+
+# 2. 改 my-rule.json：baseURL / searchURL / 选择器（选择器一律 // 开头）
+#    · 搜索：searchList 是结果条目，searchName/searchResult 从「单条目」里取名与链接
+#    · 选集：chapterRoads 是线路容器，chapterResult 从「单条线路」里取剧集链接
+#    · 线路名：默认取线路容器的文本；**线路名在别处时**（MacCMS 那种共享标签栏）
+#      用可选的 chapterRoadNames，它是文档级选择器、与 chapterRoads 按顺序对应，
+#      `@属性` 也能取： "chapterRoadNames": "//div[@id='NumTab']/a/@alt"
+#    · 变量：@keyword（搜索关键词，会 URL 编码）、@source、@episodeUrl、@roadIndex …
+
+# 3. 发布进目录（会先用与客户端同一套判定校验规则，不通过就不写文件）
+node scripts/new.mjs my-site --rule rules/my-rule.json --summary "我的线路"
+
+# 4. 目录自检
+node scripts/check.mjs
+```
+
+生成出来的 `my-site.json` 长这样（`rule` 就是那份说明书，`mode: "rule"` 是客户端识别它的依据）：
+
+```jsonc
+{
+  "name": "my-site",
+  "mode": "rule",
+  "version": "1.0.0",
+  "rule": { "api": 1, "type": "anime", "name": "my-site", /* … */ }
+}
+```
+
+**发布前最好先在应用里试一遍**：设置 → 规则式源 → 粘贴同一份规则 JSON → 安装 → 播放器里选它，
+确认「已匹配的作品」是对的、选集正确。注意：
+
+| 事项 | 说明 |
+|---|---|
+| 只有桌面版能播 | 嗅探需要隐藏浏览器窗口；网页版会停在"需要桌面版" |
+| 不执行脚本 | 规则里带 `captchaScript` / `antiCrawlerConfig` 等字段会被**直接拒绝**（与 Kazumi 的取舍不同） |
+| 请求头白名单 | 规则可以带接口需要的 apikey，但客户端只允许它访问规则里声明过的域名 |
+| 版本要升 | 改完规则跑 `node scripts/bump.mjs my-site --patch`，否则用户收不到更新 |
+| 草稿别放根目录 | 根目录下的每个 `*.json` 都会被当成源文件（`rules/`、`templates/` 这类子目录不受影响） |
+
+---
+
 ## 3. 脚本一览
 
 | 命令 | 作用 | 常用参数 |
 |---|---|---|
 | `node scripts/check.mjs` | 校验整个目录（本地与 CI 同一套规则） | `--json` 机器可读；`[dir]` 校验指定目录 |
-| `node scripts/new.mjs <name>` | 新增源：写 `{name}.json` + 往 `index.json` 追加条目 | `--url` `--referer` `--ua` `--kind hls\|file` `--summary` `--tags a,b` |
+| `node scripts/new.mjs <name> --rule <file>` | 新增**规则式源**：校验规则后写 `{name}.json` + 登记（规则名会自动统一为源名） | `--rule` `--summary` `--tags` |
+| `node scripts/new.mjs <name>` | 新增**模板源**：写 `{name}.json` + 往 `index.json` 追加条目 | `--url` `--referer` `--ua` `--kind hls\|file` `--summary` `--tags a,b` |
 | `node scripts/bump.mjs <name>` | 改版本号，**同时**更新 `{name}.json` 与 `index.json` | `--patch` `--minor` `--major` 或直接写 `1.4.0` |
 | `node scripts/url.mjs` | 从 `.git/config` 推导可直接粘贴的目录根地址 | `--remote <git-url>` `--branch <name>` |
 | `node scripts/publish.mjs` | 自检 → `git add` → `commit`（可选推送） | `--init` `--push` `--message "…"` `--dry-run` |
@@ -241,7 +295,9 @@ https://cdn.jsdelivr.net/gh/<owner>/animuse-sources@main/
 | 脏条目跳过 | 单条源不合法只跳过它，不影响整批 |
 
 所以「改内容必须升版本」是硬要求——`bump.mjs` 帮你把两处版本一起改掉，
-`check.mjs` 会在你忘记时直接报 error。
+`check.mjs` 会发现「只改了一处」的不一致，
+`publish.mjs` 还会拿工作区和 HEAD 比一次、拦住「改了内容但两处版本都没动」的情况
+（那种情况客户端永远收不到更新，而且悄无声息）。
 
 ---
 
@@ -289,6 +345,7 @@ node scripts/check.mjs --json   # 机器可读，便于接 CI
 
 ## 10. 发布前检查清单
 
+- [ ] 规则式源：已在桌面版里确认过「搜索命中 + 选集正确」
 - [ ] `node scripts/check.mjs` 0 error
 - [ ] 改过内容的源都升了版本（`bump.mjs` 会同步两个文件）
 - [ ] `urlTemplate` 用真实地址验过一次（把 `{ep}` 换成 `1`）

@@ -1,0 +1,36 @@
+{
+  "api": 1,
+  "type": "anime",
+  "name": "REPLACE_ME",
+  "version": "1.0.0",
+  "baseURL": "https://example.com/",
+  "searchMode": "api",
+  "chapterMode": "api",
+  "searchApiConfig": {
+    "request": {
+      "method": "POST",
+      "url": "https://api.example.com/rpc/search",
+      "headers": { "content-type": "application/json" },
+      "bodyType": "json",
+      "body": { "keyword": "@keyword", "page": 1 }
+    },
+    "listPath": "$[*]",
+    "namePath": "$.title",
+    "sourcePath": "$.id"
+  },
+  "chapterApiConfig": {
+    "request": {
+      "method": "POST",
+      "url": "https://api.example.com/rpc/detail",
+      "headers": { "content-type": "application/json" },
+      "bodyType": "json",
+      "body": { "id": "@source" }
+    },
+    "roadsPath": "$.sources[*]",
+    "roadNamePath": "$.name",
+    "episodesPath": "$.episodes[*]",
+    "episodeNamePath": "$.title",
+    "episodeUrlPath": "$.id",
+    "episodePage": { "url": "https://example.com/anime/@source/play/@episodeUrl" }
+  }
+}
